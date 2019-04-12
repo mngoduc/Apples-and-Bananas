@@ -1,0 +1,255 @@
+close all; clear all ; clc; 
+
+%% Setting Up 
+in2m = 0.0254;
+C2K = 273.15; 
+lbf2N = 4.44822; 
+P_atm = 101325;             % [Pa]
+R = 287;                    % [J/kg K]
+
+G1.A1 = 27.3 * in2m^2;              
+G1.A2 = 6.4 * in2m^2;
+G1.A3 = 9.0 * in2m^2; 
+G1.A4 = 7.2 * in2m^2;
+G1.A5 = 4.7 * in2m^2; 
+G1.A8 = 3.87 * in2m^2;
+
+G2.RF_T2 = 0.68;           % Cross Flow RF
+G2.RF_T3 = 0.68;           % Cross Flow RF 
+G2.RF_T4 = 0.68;           % Cross Flow RF 
+G2.RF_T5 = 0.86;           % Axial Flow RF 
+G2.RF_T8 = 0.68;           % Cross Flow RF 
+
+G3.LHV = 42.8e6;        % J/kg
+
+% Importing Data & Reassigning the columns to corresponding names
+
+filename_sample = 'SR30_Sample_Data_2006.xlsx';
+filename_our = 'Data.xlsx';
+filename_2 = 'SR30_Sample_Data_Orig.xlsx';
+data = xlsread(filename_2);
+
+D.RPM = data(:,1)';
+D.T2m = data(:,2)' + C2K;            % [K]
+D.T3m = data(:,3)' + C2K;            % [K]
+D.T4m = data(:,4)' + C2K;            % [K]
+D.T5m = data(:,5)' + C2K;            % [K]
+D.T8m = data(:,6)' + C2K;            % [K]
+D.DP2 = (data(:,7)')*1e3; % difference b/w static and stagnation, in [Pa]
+D.PT3 = (data(:,8)')*1e3 + P_atm;                    % [Pa]
+D.P4 = (data(:,9)')*1e3 + P_atm;                    % [Pa]
+D.PT5 = (data(:,10)')*1e3 + P_atm;                   % [Pa]
+D.PT8 = (data(:,11)')*1e3+ P_atm;                    % [Pa]
+D.FuelFlow = data(:,12)';           % [kg/s]
+D.Thrust = data(:,13)';
+
+
+%% Problem 2 
+
+% State 2
+P2.Po2 = P_atm*ones(size(D.DP2));   % [Pa]
+P2.P2 = P2.Po2 - D.DP2;             % [Pa]
+[~, P2.k2] = specHeatAir(D.T2m); 
+P2.M2 = ((2./(P2.k2-1)).*((P2.Po2./P2.P2).^((P2.k2-1)./P2.k2)-1)).^(1/2);
+
+P2.T2 = Tm2T(D.T2m, G2.RF_T2, P2.M2, P2.k2);        % [K]
+P2.To2 = T2To(P2.T2, P2.M2, P2.k2);                 % [K]
+
+P2.V2 = P2.M2.*sqrt(P2.k2*R.*P2.T2);
+P2.ro2 = P2.Po2./(R.*P2.To2);
+P2.r2 = P2.ro2.*(P2.P2./P2.Po2).*(P2.To2./P2.T2);
+P2.mdot_air = P2.r2.*P2.V2.*G1.A2;     % [kg/s] 0.1 to 0.3
+P2.MFP2 = (P2.mdot_air.*sqrt(R*P2.To2)./(G1.A2.*P2.Po2));
+
+% State 1 COME BACK TO THIS yikes
+P2.Po1 = P2.Po2;                    % [Pa]
+P2.To1 = P2.To2;                    % [K]
+
+P2.MFP1 = P2.MFP2*G1.A2/G1.A1;
+P2.k1 = P2.k2;
+for i = 1:length(P2.k1)
+    P2.M1(i) = MFP2M(P2.k1(i),P2.MFP1(i),P2.To1(i));
+end
+
+P2.Tratio1 = isenRatioT(P2.k1, P2.M1);
+% using isentropic ratios, returns To/T
+P2.T1 = P2.To1./P2.Tratio1;
+P2.V1 = P2.M1.*sqrt(P2.k1.*R.*P2.T1);
+
+% State 3
+P2.Po3 = D.PT3;
+[~, P2.k3] = specHeatAir(D.T3m); 
+P2.To3 = D.T3m; % estimated value
+% doing it the iterative way
+% P2.M3(1) = RF2M(D.T3m(1),P2.To3(1),G2.RF_T3(1),P2.k3(1));
+P2.MFP3 = (P2.mdot_air.*sqrt(R*P2.To3)./(G1.A3.*P2.Po3));   % estimated MFP
+for i = 1:length(P2.MFP3)
+    P2.M3(i) = MFP2M(P2.k3(i),P2.MFP3(i),P2.To3(i));   % estimated value
+end
+P2.T3 = D.T3m./(1+G2.RF_T3.*(P2.k3-1)./2.*P2.M3.^2);
+P2.To3 = P2.T3.*(1+(P2.k3-1)./2.*P2.M3.^2);
+P2.V3 = P2.M3.*sqrt(P2.k3.*R.*P2.T3);
+
+% State 4
+P2.P4 = D.P4;
+P2.QDotComb = G3.LHV * D.FuelFlow; %[J/s]
+P2.mDotTot = D.FuelFlow + P2.mdot_air;
+
+P2.To4 = D.T4m;
+[~, P2.k4] = specHeatAir(D.T4m); 
+for i = 1:length(P2.To4)
+    [P2.MFP4(i),P2.Po4(i),P2.M4(i)] = ToP2MFP(P2.mDotTot(i),R,P2.To4(i),G1.A4,P2.k4(i),P2.P4(i));
+end
+P2.T4 = D.T4m./(1+G2.RF_T4.*(P2.k4-1)./2.*P2.M4.^2);
+P2.To4 = P2.T4.*isenRatioT(P2.k4,P2.M4);
+P2.V4 = P2.M4.*sqrt(P2.k4.*R.*P2.T4);
+
+% State 5
+P2.Po5 = D.PT5;
+P2.To5 = D.T5m;  % initilizing to an estimated value
+% %Work_tubine_out = Work_compressor_in = mDotAir * delta h (from stag 2 to stag 3)
+% P2.W_turb = P2.mdot_air .* dh(P2.To3, P2.To2);
+
+% let's assume some constant cp as a check for stag temp 5
+% P2.To5c = P2.To4 - P2.W_turb ./ (1005 * P2.mDotTot);
+
+[~, P2.k5] = specHeatAir(D.T5m);
+P2.MFP5 = (P2.mDotTot.*sqrt(R*P2.To5)./(G1.A5.*P2.Po5));
+for i = 1:length(P2.k5)
+    P2.M5(i) = MFP2M(P2.k5(i),P2.MFP5(i),P2.To5(i));
+end
+% using isentropic ratios, returns To/T
+P2.T5 = D.T5m./(1+G2.RF_T5.*(P2.k5-1)./2.*P2.M5.^2);
+P2.To5 = P2.T5.*isenRatioT(P2.k5,P2.M5);
+P2.V5 = P2.M5.*sqrt(P2.k5.*R.*P2.T5);
+
+% State 8
+%P2.P8 = P2.Po2; % P8 is the same as Patm
+P2.Po8 = D.PT8;
+P2.To8 = D.T8m;
+[~, P2.k8] = specHeatAir(D.T8m);
+
+% P2.M8 = sqrt((2./(P2.k8 - 1)).*((P2.Po8./P2.P8).^((P2.k8 - 1)./P2.k8)-1));
+
+for j = 1:20
+    P2.MFP8 = (P2.mDotTot.*sqrt(R*P2.To8)./(G1.A8.*P2.Po8));
+    for i = 1:length(P2.MFP8)
+        P2.M8(i) = MFP2M(P2.k8(i),P2.MFP8(i),P2.To8(i));   % estimated value
+    end
+    P2.T8 = D.T8m./(1+G2.RF_T8.*(P2.k8-1)./2.*P2.M8);
+    [~, P2.k8] = specHeatAir(P2.T8);
+    P2.To8 = P2.T8.*isenRatioT(P2.k8,P2.M8);
+end
+
+P2.V8_1 = (2*dh(P2.To8, P2.T8)).^(1/2);  
+P2.V8_2 = P2.M8.*sqrt(P2.k8.*R.*P2.T8);  
+
+P2.F_T = P2.mDotTot .* P2.V8_2 - P2.mdot_air.* P2.V1; 
+
+%% Plotting Portion of Problem 2
+
+Plot2.Po_arr = [P2.Po1; P2.Po2; P2.Po3; P2.Po4; P2.Po5; P2.Po8];
+Plot2.To_arr = [P2.To1; P2.To2; P2.To3; P2.To4; P2.To5; P2.To8];
+Plot2.M_arr = [P2.M1; P2.M2; P2.M3; P2.M4; P2.M5; P2.M8];
+Plot2.V_arr = [P2.V1; P2.V2; P2.V3; P2.V4; P2.V5; P2.V8_2];
+Plot2.leg = ['Point 1';'Point 2';'Point 3';'Point 4';'Point 5';'Point 8'];
+
+% Stagnation Temp Plot
+figure('units','normalized','outerposition',[0 0 .75 .75]); % for larger plot
+hold on;
+for i = 1:6
+    Plot2.h(i) = plot(D.RPM, Plot2.To_arr(i,:),'o--','LineWidth',2,'MarkerSize',5);
+end
+legend(Plot2.h,Plot2.leg, 'Location', 'best');
+title('Stagnation Temperature as a function of Spool Speed');
+xlabel('Spool Speed, \omega (RPM)','FontSize',18,'FontWeight','bold');
+ylabel('Stagnation Temperature, T_o [K]','FontSize',18,'FontWeight','bold');
+set(gca,'FontSize',18);
+
+% Stagnation Pressure Plot 
+figure('units','normalized','outerposition',[0 0 .75 .75]); % for larger plot
+hold on;
+for i = 1:6
+    Plot2.h(i) = plot(D.RPM, Plot2.Po_arr(i,:),'o--','LineWidth',2,'MarkerSize',5);
+end
+legend(Plot2.h,Plot2.leg, 'Location', 'best');
+title('Stagnation Pressure as a function of Spool Speed');
+xlabel('Spool Speed, \omega (RPM)','FontSize',18,'FontWeight','bold');
+ylabel('Stagnation Pressure, P_o [Pa]','FontSize',18,'FontWeight','bold');
+set(gca,'FontSize',18);
+
+% Mach Number Plot 
+figure('units','normalized','outerposition',[0 0 .75 .75]); % for larger plot
+hold on;
+for i = 1:6
+    Plot2.h(i) = plot(D.RPM, Plot2.M_arr(i,:),'o--','LineWidth',2,'MarkerSize',5);
+end
+legend(Plot2.h,Plot2.leg, 'Location', 'best');
+title('Mach as a function of Spool Speed');
+xlabel('Spool Speed, \omega (RPM)','FontSize',18,'FontWeight','bold');
+ylabel('Mach Number, M ','FontSize',18,'FontWeight','bold');
+set(gca,'FontSize',18);
+
+% Velocity Plot 
+figure('units','normalized','outerposition',[0 0 .75 .75]); % for larger plot
+hold on;
+for i = 1:6
+    Plot2.h(i) = plot(D.RPM, Plot2.V_arr(i,:),'o--','LineWidth',2,'MarkerSize',5);
+end
+legend(Plot2.h,Plot2.leg, 'Location', 'best');
+title('Velocity as a function of Spool Speed');
+xlabel('Spool Speed, \omega (RPM)','FontSize',18,'FontWeight','bold');
+ylabel('Velocity, V [m/s]','FontSize',18,'FontWeight','bold');
+set(gca,'FontSize',18);
+
+% air flow rate, fuel flow rate, 
+figure('units','normalized','outerposition',[0 0 .75 .75]); % for larger plot
+plot(D.RPM,P2.mdot_air,D.RPM,D.FuelFlow, 'o--','LineWidth',2,'MarkerSize',5);
+legend('Air Flow Rate', 'Fuel Flow Rate', 'Location', 'best')
+xlabel('Spool Speed, \omega (RPM)','FontSize',18,'FontWeight','bold');
+ylabel('Flow Rates [kg/s]','FontSize',18,'FontWeight','bold');
+set(gca,'FontSize',18);
+
+P2.AF = P2.mdot_air./D.FuelFlow;
+figure('units','normalized','outerposition',[0 0 .75 .75]); % for larger plot
+plot(D.RPM,P2.AF,'o--','LineWidth',2,'MarkerSize',5);
+xlabel('Spool Speed, \omega (RPM)','FontSize',18,'FontWeight','bold');
+ylabel('Air-Fuel Ratio','FontSize',18,'FontWeight','bold');
+set(gca,'FontSize',18);
+
+% calculated thrust and recoded thrust 
+figure('units','normalized','outerposition',[0 0 .75 .75]); % for larger plot
+plot(D.RPM,D.Thrust,'o--','LineWidth',2,'MarkerSize',5);
+hold on;
+plot(D.RPM,P2.F_T, 'o--','LineWidth',2,'MarkerSize',5);
+legend('Measured Thrust','Calculated Thrust','Location', 'best')
+xlabel('Spool Speed, \omega (RPM)','FontSize',18,'FontWeight','bold');
+ylabel('Thrust Force, F_T [N]','FontSize',18,'FontWeight','bold');
+set(gca,'FontSize',18);
+
+%% Problem 3
+
+% specific thrust 
+% double check if P2.F_T (calculated thrust) or D.Thrust (measured value)
+
+P3.ST = P2.F_T ./ P2.mdot_air; 
+% [N/kg/s] Specific Thrust, ST, Thrust per unit of air mass flow through engine
+figure('units','normalized','outerposition',[0 0 .75 .75]); % for larger plot
+plot(D.RPM,P3.ST,'o--','LineWidth',2,'MarkerSize',5);
+xlabel('Spool Speed, \omega (RPM)','FontSize',18,'FontWeight','bold');
+ylabel('Specific Thrust [N/kg/s]','FontSize',18,'FontWeight','bold');
+set(gca,'FontSize',18);
+
+% thrust specific fuel consumption
+% double check if P2.F_T (calculated thrust) or D.Thrust (measured value)
+
+P3.TSFC = D.FuelFlow ./ P2.F_T;
+figure('units','normalized','outerposition',[0 0 .75 .75]); % for larger plot
+plot(D.RPM,P3.TSFC,'o--','LineWidth',2,'MarkerSize',5);
+xlabel('Spool Speed, \omega (RPM)','FontSize',18,'FontWeight','bold');
+ylabel('Thrust Specific Fuel Consumption [N/kg/s]','FontSize',18,'FontWeight','bold');
+set(gca,'FontSize',18);
+
+% thermal efficiency  = net work / heat input;
+% net work = W_net = W_turb - W_comp
+% heat input = LHV * m_dot_fuel
